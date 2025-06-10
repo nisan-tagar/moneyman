@@ -9,6 +9,7 @@ import { TransactionStatuses } from "israeli-bank-scrapers/lib/transactions.js";
 import { sendDeprecationMessage } from "../notifier.js";
 import { createSaveStats } from "../saveStats.js";
 import { TableRow, tableRow } from "../transactionTableRow.js";
+import { retry } from "async";
 
 const logger = createLogger("GoogleSheetsStorage");
 
@@ -21,6 +22,27 @@ const {
 } = process.env;
 
 const worksheetName = WORKSHEET_NAME || "_moneyman";
+
+/**
+ * Retry configuration for Google API operations with exponential backoff
+ * Handles transient errors like 503 "Service is currently unavailable"
+ */
+const retryOptions = {
+  times: 3,
+  interval: (retryCount: number) => 100 * Math.pow(2, retryCount - 1), // 100ms, 200ms, 400ms
+  errorFilter: (err: any) => {
+    logger(`Retry attempt due to error: ${err?.message || err}`);
+    // Check if it's a retryable 503 error
+    return (
+      err &&
+      (err.status === 503 ||
+        err.message?.includes("503") ||
+        err.message?.includes("currently unavailable") ||
+        err.message?.includes("temporarily unavailable") ||
+        err.message?.includes("Service Unavailable"))
+    );
+  },
+};
 
 export class GoogleSheetsStorage implements TransactionStorage {
   canSave() {
@@ -60,7 +82,6 @@ export class GoogleSheetsStorage implements TransactionStorage {
         // Use the new uniqueId as the unique identifier for the transactions if the hash type is moneyman
         if (existingHashes.has(tx.uniqueId)) {
           stats.existing++;
-          stats.skipped++;
           continue;
         }
       }
@@ -73,14 +94,12 @@ export class GoogleSheetsStorage implements TransactionStorage {
         // To avoid double counting, skip if the new hash is already in the sheet
         if (!existingHashes.has(tx.uniqueId)) {
           stats.existing++;
-          stats.skipped++;
         }
 
         continue;
       }
 
       if (tx.status === TransactionStatuses.Pending) {
-        stats.skipped++;
         continue;
       }
 
@@ -90,7 +109,10 @@ export class GoogleSheetsStorage implements TransactionStorage {
 
     if (rows.length) {
       stats.added = rows.length;
-      await Promise.all([onProgress("Saving"), sheet.addRows(rows)]);
+      await Promise.all([
+        onProgress("Saving"),
+        retry(retryOptions, async () => sheet.addRows(rows)),
+      ]);
       if (TRANSACTION_HASH_TYPE !== "moneyman") {
         sendDeprecationMessage("hashFiledChange");
       }
@@ -109,7 +131,7 @@ export class GoogleSheetsStorage implements TransactionStorage {
     });
 
     const doc = new GoogleSpreadsheet(GOOGLE_SHEET_ID, auth);
-    await doc.loadInfo();
+    await retry(retryOptions, async () => doc.loadInfo());
     return doc;
   }
 
@@ -117,7 +139,8 @@ export class GoogleSheetsStorage implements TransactionStorage {
    * Load hashes from the "hash" column, assuming the first row is a header row
    */
   private async loadHashes(sheet: GoogleSpreadsheetWorksheet) {
-    await sheet.loadHeaderRow();
+    await retry(retryOptions, async () => sheet.loadHeaderRow());
+
     const hashColumnNumber = sheet.headerValues.indexOf("hash");
     if (hashColumnNumber === -1) {
       throw new Error("Hash column not found");
@@ -130,9 +153,11 @@ export class GoogleSheetsStorage implements TransactionStorage {
     const columnLetter = String.fromCharCode(65 + hashColumnNumber);
     const range = `${columnLetter}2:${columnLetter}`;
 
-    const columns = await sheet.getCellsInRange(range, {
-      majorDimension: "COLUMNS",
-    });
+    const columns = await retry(retryOptions, async () =>
+      sheet.getCellsInRange(range, {
+        majorDimension: "COLUMNS",
+      }),
+    );
 
     if (Array.isArray(columns)) {
       return new Set(columns[0] as string[]);
