@@ -76,6 +76,17 @@ export const LocalJsonSchema = z.object({
   path: z.string().optional(),
 });
 
+export const TelegramStorageSchema = z.object({
+  /**
+   * Whether to send transactions as a JSON file to the Telegram chat.
+   * When enabled, all scraped transactions will be sent to your Telegram chat.
+   * This is independent of notification messages (errors, progress, etc.) which
+   * are controlled by options.notifications.telegram.
+   * @default true
+   */
+  enabled: z.boolean().default(true),
+});
+
 // Storage configuration schema
 export const StorageSchema = z
   .object({
@@ -87,6 +98,7 @@ export const StorageSchema = z
     localJson: LocalJsonSchema.optional(),
     webPost: WebPostSchema.optional(),
     sql: SqlStorageSchema.optional(),
+    telegram: TelegramStorageSchema.optional(),
   })
   .refine((data) => Object.values(data).some(Boolean), {
     error: "At least one storage provider must be configured",
@@ -124,6 +136,24 @@ export const NotificationOptionsSchema = z.object({
        * Maximum time in seconds to wait for OTP response from user.
        */
       otpTimeoutSeconds: z.number().min(30).max(600).optional().default(300),
+      /**
+       * Enable sending run metadata to Telegram after each run.
+       * When enabled, a JSON file with run metadata will be sent to the chat.
+       * @default true
+       */
+      reportRunMetadata: z.boolean().optional().default(true),
+      /**
+       * Include used domains in the run metadata report.
+       * Only applies when reportRunMetadata is enabled.
+       * @default true
+       */
+      reportUsedDomains: z.boolean().optional().default(true),
+      /**
+       * Include external IP address in the run metadata report.
+       * Only applies when reportRunMetadata is enabled.
+       * @default true
+       */
+      reportExternalIp: z.boolean().optional().default(true),
     })
     .optional(),
 });
